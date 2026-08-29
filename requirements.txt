@@ -1,0 +1,38 @@
+# ---------------------------------------------------------------------------
+# DefectVision - runtime dependencies
+#
+# NOTE on PyTorch: on Windows the PyPI wheels are already CPU-only, so a plain
+# `pip install -r requirements.txt` works. On Linux (incl. the Docker image)
+# PyPI ships CUDA-linked wheels (~2.5 GB); the Dockerfile therefore installs
+# torch from the official CPU index:
+#     --extra-index-url https://download.pytorch.org/whl/cpu
+# ---------------------------------------------------------------------------
+
+# --- scientific core -------------------------------------------------------
+numpy>=1.26,<3.0
+pandas>=2.1
+scipy>=1.11
+scikit-learn>=1.4
+Pillow>=10.2
+matplotlib>=3.8
+
+# --- deep learning ---------------------------------------------------------
+torch>=2.2
+torchvision>=0.17
+
+# --- M3: experiment tracking + data/model versioning -----------------------
+mlflow>=2.12
+dvc>=3.50
+
+# --- M4: model serving -----------------------------------------------------
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+pydantic>=2.6
+pydantic-settings>=2.2
+
+# --- CLI / config / utilities ---------------------------------------------
+typer>=0.12
+rich>=13.7
+PyYAML>=6.0
+tqdm>=4.66

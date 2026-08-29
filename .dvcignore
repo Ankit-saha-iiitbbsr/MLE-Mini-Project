@@ -1,0 +1,18 @@
+# Paths DVC should not traverse when computing stage hashes.
+# Keeps `dvc status` fast and stops transient files from invalidating stages.
+
+.venv/
+myvenv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+
+mlruns/
+mlartifacts/
+mlflow.db
+
+monitoring/*.db
+monitoring/*.db-wal
+monitoring/*.db-shm
+
+reports/figures/

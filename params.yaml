@@ -1,0 +1,250 @@
+# ===========================================================================
+# DefectVision - single source of truth for the whole pipeline.
+#
+# Every DVC stage declares which keys of this file it depends on, so changing
+# a value here invalidates exactly the stages it affects and nothing else.
+# Every training run logs a snapshot of the keys it used to MLflow, which is
+# what makes a run reproducible from its logged configuration.
+# ===========================================================================
+
+seed: 42
+
+# Where generated reports and figures are written. Overridable so that a test
+# run cannot overwrite the real, submitted reports with fixture-sized output.
+reports_dir: reports
+
+# ---------------------------------------------------------------------------
+# M2 - Data engineering
+# ---------------------------------------------------------------------------
+data:
+  # kaggle    -> the real casting corpus (local copy if present, else download)
+  # synthetic -> render a casting-like dataset locally (no credentials needed);
+  #              keeps the pipeline reproducible on a machine with no Kaggle
+  #              access, e.g. CI. See src/defectvision/data/synth.py.
+  # local     -> use images already present under data/raw/<class>/
+  source: kaggle
+
+  kaggle_dataset: ravirajsinh45/real-life-industrial-dataset-of-casting-product
+  # Where an already-extracted copy lives, checked before hitting the network.
+  kaggle_local_dir: datasets
+  # casting_data (7348 img @ 300x300) is the training corpus.
+  # casting_512x512 is deliberately NOT ingested -- it is held back as a real
+  # camera-upgrade distribution shift for the M5 monitoring work.
+  kaggle_subset: casting_data
+
+  raw_dir: data/raw
+  interim_dir: data/interim
+  processed_dir: data/processed
+
+  # Binary problem. Index 0 = negative (ok), index 1 = positive (defect).
+  # The positive class is the DEFECT because recall on defects is the metric
+  # the business actually cares about (an escaped defect is the costly error).
+  classes: [ok, defect]
+
+  image_size: 128       # square side length fed to the model
+  channels: 1           # casting images are grayscale
+
+  synthetic:
+    n_images: 3000
+    defect_ratio: 0.5
+    # 0.0 = trivially separable, 1.0 = near-invisible defects.
+    # Calibrated empirically: at 0.45 the flaws span 6-12 px on a 128 px frame
+    # and no single global image statistic separates the classes (all Cohen's
+    # d < 0.10, and a random forest over those statistics scores 0.505). The
+    # baseline CNN reaches ~0.88 accuracy by epoch 8 and keeps climbing, which
+    # leaves real headroom for the transfer-learning arms to win on merit.
+    difficulty: 0.45
+    n_blades: 8
+
+  split:
+    val_size: 0.15
+    test_size: 0.20
+    stratify: true
+    # Splitting on the content hash keeps near-duplicate images in the same
+    # fold, which prevents optimistic leakage across the split boundary.
+    group_by_hash: true
+
+# ---------------------------------------------------------------------------
+# M2 - Data validation gates.
+# A hard failure aborts the pipeline; a soft failure is recorded as a warning
+# in the validation report but lets the run continue.
+# ---------------------------------------------------------------------------
+validation:
+  allowed_formats: [png, jpg, jpeg, bmp]
+  min_width: 32
+  min_height: 32
+  max_width: 4096
+  max_height: 4096
+  max_file_bytes: 10485760          # 10 MiB
+  min_mean_intensity: 3.0           # rejects all-black frames (lens cap on)
+  max_mean_intensity: 252.0         # rejects blown-out frames (flash misfire)
+  min_std_intensity: 2.0            # rejects flat/uniform frames (no signal)
+  min_images_per_class: 100
+  max_duplicate_ratio: 0.10         # exact-duplicate share of the corpus
+  max_corrupt_ratio: 0.02           # unreadable files share
+  max_class_imbalance_ratio: 5.0    # majority / minority
+  fail_on_error: true
+
+# ---------------------------------------------------------------------------
+# M2 - Preprocessing + augmentation.
+# `preprocess` is the ONLY block applied at serving time; keeping it separate
+# from `augment` is what prevents training-serving skew.
+# ---------------------------------------------------------------------------
+preprocess:
+  resize: 128
+  grayscale: true
+  normalize_mean: [0.485]
+  normalize_std: [0.229]
+
+augment:
+  enabled: true
+  random_rotation_deg: 12
+  random_translate: 0.06
+  random_scale: [0.92, 1.08]
+  horizontal_flip_p: 0.5
+  vertical_flip_p: 0.5
+  brightness_jitter: 0.22
+  contrast_jitter: 0.22
+  gaussian_blur_p: 0.20
+  gaussian_noise_std: 0.02
+  # Deliberately 0. A defect here can be under 100 px; erasing a random patch
+  # can delete the only evidence while the label still reads "defect", which is
+  # label noise dressed up as regularisation. See data/transforms.py.
+  random_erasing_p: 0.0
+
+# ---------------------------------------------------------------------------
+# M3 - Training / experimentation
+# ---------------------------------------------------------------------------
+train:
+  epochs: 12
+  batch_size: 64
+  num_workers: 0                    # 0 keeps Windows spawn semantics simple
+  optimizer: adamw
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  scheduler: cosine                 # cosine | step | none
+  early_stopping_patience: 4
+  # Selection metric for "best epoch" and for promoting a run to the registry.
+  monitor_metric: f1
+  class_weighting: balanced         # balanced | none
+  amp: false                        # CPU training -> mixed precision off
+  max_train_batches: null           # smoke-test escape hatch
+
+  models:
+    baseline_cnn:
+      arch: baseline_cnn
+      channels: [32, 64, 128]
+      dropout: 0.3
+      # From-scratch training needs a larger LR and more epochs than the
+      # pretrained arms, which start from useful edge/blob filters.
+      learning_rate: 0.002
+      epochs: 14
+    resnet18:
+      arch: resnet18
+      pretrained: true
+      freeze_backbone: false
+      dropout: 0.2
+      learning_rate: 0.0003
+      epochs: 8
+    mobilenet_v3:
+      arch: mobilenet_v3_small
+      pretrained: true
+      freeze_backbone: false
+      dropout: 0.2
+      learning_rate: 0.0005
+      epochs: 8
+    logreg_hog:
+      arch: logreg_hog                # classical control, no deep learning
+      C: 1.0
+
+# ---------------------------------------------------------------------------
+# M3 - Evaluation
+# ---------------------------------------------------------------------------
+evaluate:
+  # Operating threshold is TUNED on validation, not left at 0.5, because the
+  # cost of a missed defect >> cost of a false alarm on a production line.
+  threshold_strategy: max_f1        # max_f1 | fixed | target_recall
+  fixed_threshold: 0.5
+  target_recall: 0.98
+  bootstrap_samples: 500            # for confidence intervals on test metrics
+
+# ---------------------------------------------------------------------------
+# M3/M4 - MLflow
+# ---------------------------------------------------------------------------
+mlflow:
+  # SQLite rather than the legacy ./mlruns file store: MLflow 3.x put the file
+  # backend into maintenance mode and refuses to use it, and the Model Registry
+  # (used by the promotion step) has always required a database backend.
+  tracking_uri: sqlite:///mlflow.db
+  artifact_location: mlartifacts
+  experiment_name: defectvision
+  registered_model_name: defectvision-classifier
+  # A candidate must clear these gates before it can be promoted to Staging.
+  promotion_gates:
+    min_test_f1: 0.85
+    min_test_recall_defect: 0.85
+    max_latency_p95_ms: 250.0
+
+# ---------------------------------------------------------------------------
+# M4 - Serving
+# ---------------------------------------------------------------------------
+serving:
+  model_bundle: models/production/model_bundle.pt
+  host: 0.0.0.0
+  port: 8000
+  max_upload_bytes: 5242880         # 5 MiB per image
+  max_batch_size: 16
+  request_timeout_s: 30
+  log_predictions: true
+  # Images whose confidence falls in this band are routed to human review
+  # rather than being auto-actioned (human-in-the-loop, M5 / CS10).
+  review_band: [0.35, 0.65]
+
+# ---------------------------------------------------------------------------
+# M5 - Monitoring, drift, retraining
+# ---------------------------------------------------------------------------
+monitoring:
+  db_path: monitoring/predictions.db
+  reference_stats: monitoring/reference_stats.json
+  # Image-level statistics used as the drift feature vector. These are cheap to
+  # compute at inference time and are exactly what shifts when lighting or
+  # camera geometry changes.
+  drift_features:
+    - mean_intensity
+    - std_intensity
+    - p05_intensity
+    - p95_intensity
+    - edge_density
+    - laplacian_var        # focus / blur proxy
+    - entropy
+  psi_bins: 10
+  thresholds:
+    psi_warn: 0.10
+    psi_alert: 0.25
+    ks_pvalue_alert: 0.01
+    confidence_drop_alert: 0.08     # abs drop in mean max-probability
+    accuracy_drop_alert: 0.05       # abs drop vs. reference test accuracy
+    review_rate_alert: 0.20         # share of requests in the review band
+  min_samples_for_drift: 100
+
+drift_simulation:
+  scenarios:
+    lighting_dim:      { brightness: -0.35, contrast: 0.85 }
+    lighting_bright:   { brightness: 0.35,  contrast: 1.15 }
+    camera_angle:      { rotation_deg: 25, shear_deg: 10, scale: 0.88 }
+    focus_blur:        { blur_sigma: 2.0 }
+    sensor_noise:      { noise_std: 0.08 }
+    new_variant:       { brightness: 0.18, rotation_deg: 15, scale: 0.8, noise_std: 0.03 }
+
+retraining:
+  # A trigger fires only when a rule is breached on `consecutive_windows`
+  # consecutive evaluation windows, which suppresses single-window noise.
+  window_size: 200
+  consecutive_windows: 2
+  cooldown_hours: 24
+  min_new_labeled_samples: 300
+  rules:
+    - { name: data_drift_psi,       metric: psi_max,             op: ">=", threshold: 0.25, severity: high }
+    - { name: confidence_collapse,  metric: mean_confidence_drop, op: ">=", threshold: 0.08, severity: medium }
+    - { name: accuracy_degradation, metric: accuracy_drop,       op: ">=", threshold: 0.05, severity: high }
+    - { name: review_queue_overflow, metric: review_rate,        op: ">=", threshold: 0.20, severity: medium }

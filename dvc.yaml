@@ -1,0 +1,195 @@
+# ===========================================================================
+# DVC pipeline - the reproducible DAG for the whole system.
+#
+#   dvc repro              rebuild whatever is stale, in dependency order
+#   dvc dag                print the graph
+#   dvc metrics show       compare tracked metrics
+#   dvc repro -f train     force a stage to re-run
+#
+# Every stage declares the exact `params.yaml` keys it reads. Changing
+# `data.synthetic.difficulty` therefore invalidates `acquire` and everything
+# downstream, while changing `serving.port` invalidates nothing -- which is what
+# makes `dvc repro` safe to run habitually rather than a full rebuild every time.
+#
+# Stages shell out to the same `defectvision` CLI a developer uses by hand, so
+# there is no separate pipeline-only code path that can rot.
+# ===========================================================================
+
+stages:
+
+  # -------------------------------------------------------------------------
+  # M2 - Data engineering
+  # -------------------------------------------------------------------------
+  acquire:
+    cmd: python -m defectvision.cli acquire
+    deps:
+      - src/defectvision/data/acquire.py
+      - src/defectvision/data/synth.py
+    params:
+      - seed
+      - data.source
+      - data.kaggle_dataset
+      - data.kaggle_local_dir
+      - data.kaggle_subset
+      - data.classes
+      - data.image_size
+      - data.synthetic
+    outs:
+      - data/raw
+    desc: Fetch or generate the raw image corpus into data/raw/<class>/.
+
+  validate:
+    cmd: python -m defectvision.cli validate
+    deps:
+      - data/raw
+      - src/defectvision/data/validate.py
+      - src/defectvision/features/image_stats.py
+    params:
+      - validation
+      - data.classes
+      - data.raw_dir
+    outs:
+      - data/interim/scan.csv
+    metrics:
+      - reports/validation_report.json:
+          cache: false
+    desc: >-
+      Quality-gate the corpus: per-file checks, duplicate and near-duplicate
+      detection, class balance, and a shortcut-leakage check. Fails the
+      pipeline on a blocking breach.
+
+  split:
+    cmd: python -m defectvision.cli split
+    deps:
+      - data/interim/scan.csv
+      - src/defectvision/data/split.py
+    params:
+      - seed
+      - data.split
+      - data.classes
+      - data.processed_dir
+    outs:
+      - data/processed/manifest.csv
+      - data/processed/dataset_card.json
+    desc: >-
+      Stratified, leakage-safe train/val/test manifest. Near-duplicates are
+      grouped so copies of one part cannot straddle the split boundary.
+
+  # -------------------------------------------------------------------------
+  # M3 - Experimentation
+  # -------------------------------------------------------------------------
+  train:
+    cmd: python -m defectvision.cli train --all --no-compare
+    deps:
+      - data/processed/manifest.csv
+      - data/raw
+      - src/defectvision/training/train.py
+      - src/defectvision/training/train_classical.py
+      - src/defectvision/training/evaluate.py
+      - src/defectvision/models
+      - src/defectvision/data/dataset.py
+      - src/defectvision/data/transforms.py
+    params:
+      - seed
+      - train
+      - preprocess
+      - augment
+      - evaluate
+      - mlflow.tracking_uri
+      - mlflow.experiment_name
+    outs:
+      - models/candidates
+    desc: >-
+      Train every configured arm, each tracked as an MLflow run with its
+      config, dataset hash, git commit, metrics, plots and a deployable bundle.
+
+  compare:
+    cmd: python -m defectvision.cli compare
+    deps:
+      - models/candidates
+      - src/defectvision/training/compare.py
+    params:
+      - mlflow.promotion_gates
+      - mlflow.registered_model_name
+      - train.monitor_metric
+      - serving.model_bundle
+    outs:
+      - models/production/model_bundle.pt
+    metrics:
+      - reports/model_comparison.csv:
+          cache: false
+    desc: >-
+      Apply promotion gates, rank the survivors, write the comparison report,
+      and promote the winner to models/production/.
+
+  # -------------------------------------------------------------------------
+  # M5 - Monitoring
+  # -------------------------------------------------------------------------
+  reference_stats:
+    cmd: python -m defectvision.cli reference-stats
+    deps:
+      - data/processed/manifest.csv
+      - data/interim/scan.csv
+      - models/production/model_bundle.pt
+      - src/defectvision/monitoring/reference.py
+    params:
+      - seed
+      - monitoring.drift_features
+      - monitoring.psi_bins
+      - monitoring.reference_stats
+    outs:
+      - monitoring/reference_stats.json
+    desc: >-
+      Freeze the training distribution (samples + PSI bin edges) as the drift
+      baseline, together with the promoted model's behavioural baseline.
+
+  simulate_drift:
+    cmd: python -m defectvision.cli simulate-drift
+    deps:
+      - models/production/model_bundle.pt
+      - monitoring/reference_stats.json
+      - src/defectvision/monitoring/simulate_drift.py
+      - src/defectvision/data/corruptions.py
+    params:
+      - seed
+      - drift_simulation.scenarios
+      - serving.review_band
+      - monitoring.db_path
+    metrics:
+      - reports/drift_simulation.json:
+          cache: false
+    desc: >-
+      Push deliberately shifted inputs (plus one real second-camera capture)
+      through the production model and log every prediction.
+
+  monitor:
+    cmd: python -m defectvision.cli monitor
+    deps:
+      - monitoring/reference_stats.json
+      - reports/drift_simulation.json
+      - src/defectvision/monitoring/report.py
+      - src/defectvision/monitoring/drift.py
+    params:
+      - monitoring
+      - retraining.window_size
+    metrics:
+      - reports/monitoring_report.json:
+          cache: false
+    desc: >-
+      Compute PSI / KS / chi-square per scenario and per rolling window, and
+      render the drift report and figures.
+
+  check_retrain:
+    cmd: python -m defectvision.cli check-retrain || true
+    deps:
+      - reports/monitoring_report.json
+      - src/defectvision/monitoring/retrain_trigger.py
+    params:
+      - retraining
+    metrics:
+      - reports/retraining_decision.json:
+          cache: false
+    desc: >-
+      Evaluate the retraining trigger policy (persistence, cooldown, label
+      sufficiency) and emit the recommended action. `|| true` keeps the
+      pipeline green when the trigger legitimately fires (exit code 10).

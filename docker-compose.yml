@@ -1,0 +1,62 @@
+# =============================================================================
+# Local stack: the inference service, plus the MLflow UI for reviewing runs.
+#
+#   docker compose up api          # serving only
+#   docker compose up              # serving + MLflow UI on :5000
+#
+# The model bundle is mounted read-only rather than copied into the image, so a
+# newly promoted model is picked up by restarting the container instead of
+# rebuilding it. The image stays a pure "runtime", and the model stays a
+# versioned artifact managed by DVC and the MLflow registry.
+# =============================================================================
+
+services:
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: defectvision:1.0.0
+    container_name: defectvision-api
+    ports:
+      - "8000:8000"
+    volumes:
+      # Promoted model: read-only, so the service can never mutate it.
+      - ./models/production:/app/models/production:ro
+      # Prediction log: writable and persisted, so monitoring survives restarts.
+      - ./monitoring:/app/monitoring
+    environment:
+      DEFECTVISION_LOG_JSON: "1"
+      OMP_NUM_THREADS: "2"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/readyz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          # Matches OMP_NUM_THREADS above. Letting torch see more cores than the
+          # quota allows causes thread thrashing and worse tail latency.
+          cpus: "2.0"
+          memory: 2G
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v3.1.1
+    container_name: defectvision-mlflow
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./mlflow.db:/mlflow/mlflow.db
+      - ./mlartifacts:/mlflow/mlartifacts
+    working_dir: /mlflow
+    command: >
+      mlflow server
+      --backend-store-uri sqlite:///mlflow.db
+      --default-artifact-root /mlflow/mlartifacts
+      --host 0.0.0.0
+      --port 5000
+    restart: unless-stopped
+    profiles: ["full"]

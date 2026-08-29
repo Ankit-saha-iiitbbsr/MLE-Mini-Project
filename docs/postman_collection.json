@@ -1,0 +1,323 @@
+{
+  "info": {
+    "_postman_id": "c7e4a1b2-9d38-4f60-a5c1-8b2e6f0d3a94",
+    "name": "DefectVision Inference API",
+    "description": "Image-based casting defect / quality classifier.\n\nBITS PCAM* ZC412 Machine Learning Engineering mini-project, Flavor B.\n\n**Setup**\n\n1. Start the service: `python -m defectvision.cli serve`\n2. Set the `baseUrl` collection variable if you are not on localhost:8000.\n3. For the prediction requests, attach a real image file to the `file` form field (the path cannot be stored in a shared collection).\n\nRun the whole collection to exercise the happy paths and every error path in order. The `Predict - single image` request saves its `request_id` to a collection variable, which the `Feedback` request then consumes.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000",
+      "type": "string"
+    },
+    {
+      "key": "lastRequestId",
+      "value": "",
+      "type": "string",
+      "description": "Populated automatically by the single-prediction request."
+    }
+  ],
+  "item": [
+    {
+      "name": "Operations",
+      "item": [
+        {
+          "name": "Health (liveness)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/healthz", "host": ["{{baseUrl}}"], "path": ["healthz"] },
+            "description": "Returns 200 while the process is running, regardless of whether a model is loaded."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('reports ok', () => pm.expect(pm.response.json().status).to.eql('ok'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Readiness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/readyz", "host": ["{{baseUrl}}"], "path": ["readyz"] },
+            "description": "200 only when a model bundle is loaded; 503 otherwise. Distinct from liveness so an orchestrator can stop routing traffic without restart-looping a healthy process."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 when a model is loaded', () => pm.response.to.have.status(200));",
+                  "pm.test('model_loaded is true', () => pm.expect(pm.response.json().model_loaded).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Model card",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/model", "host": ["{{baseUrl}}"], "path": ["model"] },
+            "description": "Model identity, tuned threshold, training provenance (git commit + dataset manifest hash) and test metrics."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('binary classes', () => pm.expect(body.classes).to.eql(['ok', 'defect']));",
+                  "pm.test('threshold is in range', () => {",
+                  "  pm.expect(body.threshold).to.be.at.least(0).and.at.most(1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/metrics", "host": ["{{baseUrl}}"], "path": ["metrics"] },
+            "description": "Request counters and latency percentiles (p50/p95/p99) over recent traffic, plus prediction-log summary counters."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('exposes counters', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('requests_total');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Inference",
+      "item": [
+        {
+          "name": "Predict - single image",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": [],
+                  "description": "Attach a casting image (JPEG/PNG/BMP), e.g. from data/raw/defect/"
+                }
+              ]
+            },
+            "url": { "raw": "{{baseUrl}}/predict", "host": ["{{baseUrl}}"], "path": ["predict"] },
+            "description": "Classify one product image.\n\nAttach a real file to the `file` field before sending. The response `request_id` is saved to the `lastRequestId` collection variable for the Feedback request."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('lastRequestId', body.request_id);",
+                  "pm.test('class is ok or defect', () => {",
+                  "  pm.expect(body.predicted_class).to.be.oneOf(['ok', 'defect']);",
+                  "});",
+                  "pm.test('probability is a valid probability', () => {",
+                  "  pm.expect(body.probability_defect).to.be.at.least(0).and.at.most(1);",
+                  "});",
+                  "pm.test('decision is one of the three routes', () => {",
+                  "  pm.expect(body.decision).to.be.oneOf(['auto_accept', 'auto_reject', 'human_review']);",
+                  "});",
+                  "pm.test('drift features are returned', () => {",
+                  "  pm.expect(body.image_stats).to.have.property('mean_intensity');",
+                  "  pm.expect(body.image_stats).to.have.property('laplacian_var');",
+                  "});",
+                  "pm.test('request id is echoed in the header', () => {",
+                  "  pm.expect(pm.response.headers.get('X-Request-ID')).to.eql(body.request_id);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Predict - batch",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "files", "type": "file", "src": [] },
+                { "key": "files", "type": "file", "src": [] },
+                { "key": "files", "type": "file", "src": [] }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/predict/batch",
+              "host": ["{{baseUrl}}"],
+              "path": ["predict", "batch"]
+            },
+            "description": "Classify several images in one request. Returns 200 with per-item success flags whenever the request itself is well-formed, so one corrupt file does not discard the valid predictions beside it."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('one item per file', () => {",
+                  "  pm.expect(body.items.length).to.eql(body.n_requested);",
+                  "});",
+                  "pm.test('counts add up', () => {",
+                  "  pm.expect(body.n_succeeded + body.n_failed).to.eql(body.n_requested);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Error handling",
+      "item": [
+        {
+          "name": "Missing file field -> 422",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": { "mode": "formdata", "formdata": [] },
+            "url": { "raw": "{{baseUrl}}/predict", "host": ["{{baseUrl}}"], "path": ["predict"] },
+            "description": "FastAPI request validation rejects the request before any handler code runs."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('422 Unprocessable Entity', () => pm.response.to.have.status(422));"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Not an image -> 400",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": [],
+                  "description": "Attach any non-image file (a .txt works)."
+                }
+              ]
+            },
+            "url": { "raw": "{{baseUrl}}/predict", "host": ["{{baseUrl}}"], "path": ["predict"] },
+            "description": "Undecodable bytes must produce a typed 400 with a hint, never a 500. A 500 in the logs should mean the service has a bug, and that signal is worthless if malformed uploads produce 500s too."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('client error, not server error', () => {",
+                  "  pm.expect(pm.response.code).to.be.at.least(400).and.below(500);",
+                  "});",
+                  "pm.test('carries an actionable hint', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('hint');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Monitoring",
+      "item": [
+        {
+          "name": "Feedback - attach ground truth",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"request_id\": \"{{lastRequestId}}\",\n  \"ground_truth\": 1,\n  \"source\": \"teardown\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/feedback", "host": ["{{baseUrl}}"], "path": ["feedback"] },
+            "description": "Attach a label that arrived after the prediction. On a real line labels come from teardown, rework or customer returns, hours or days later; this is how accuracy monitoring and the retraining trigger ever get data.\n\nUses the request_id captured by the single-prediction request."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('label recorded', () => pm.expect(pm.response.json().recorded).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Feedback - unknown id -> 404",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"request_id\": \"does-not-exist\",\n  \"ground_truth\": 0,\n  \"source\": \"manual\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/feedback", "host": ["{{baseUrl}}"], "path": ["feedback"] },
+            "description": "An unknown request_id returns 404 rather than silently succeeding."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('404 Not Found', () => pm.response.to.have.status(404));"]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
