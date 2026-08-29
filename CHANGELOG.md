@@ -102,7 +102,7 @@ was the single decision that made the model work at all.
 
 - Unified `defectvision` CLI covering the whole lifecycle; DVC stages shell out
   to the same commands a developer runs by hand.
-- 122 tests against a temp-directory synthetic corpus.
+- 127 tests against a temp-directory synthetic corpus.
 - GitHub Actions CI: lint, tests on Python 3.10/3.12, a full synthetic pipeline
   run asserting cross-stage contracts, and a Docker build that verifies the
   container reports *not ready* without a model.

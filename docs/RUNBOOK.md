@@ -106,7 +106,7 @@ You should see JSON reporting the project root, data source, git state,
 resolved library versions, and whether a production model exists. On a fresh
 clone `production_bundle.exists` will be `false` — that is expected until §5.
 
-Run the test suite to confirm the install is sound (~90 s, 122 tests):
+Run the test suite to confirm the install is sound (~90 s, 127 tests):
 
 ```bash
 pytest -q

@@ -61,7 +61,8 @@ satisfies it.
 | Setup | README → *Quick start* |
 | Full execution guide | [`docs/RUNBOOK.md`](RUNBOOK.md) — every stage, expected output, troubleshooting |
 | **Design justifications** (Brief §4) | **[`docs/DESIGN_DECISIONS.md`](DESIGN_DECISIONS.md)** — model choice, drift-detection approach and retraining trigger, each with alternatives considered and the measured evidence; README → *Design decisions* is the summary |
-| Demo running order | [`docs/DEMO_SCRIPT.md`](DEMO_SCRIPT.md) — timed to 6:00 |
+| Demo running order | [`docs/DEMO_SOLO.md`](DEMO_SOLO.md) — single presenter, commands + narration, ~7:50. Three-presenter alternative: [`DEMO_COMMANDS.md`](DEMO_COMMANDS.md) |
+| Recording setup | [`docs/DEMO_RECORDING_GUIDE.md`](DEMO_RECORDING_GUIDE.md) — free tool options, stitching |
 
 ---
 
@@ -129,8 +130,8 @@ reflexively retraining.
 | --- | --- |
 | README clarity | Architecture diagram, quick start, per-module walkthrough |
 | Architecture diagram | Mermaid, showing the full loop including feedback |
-| Code organisation | Package mirrors the course modules; 122 tests; CI |
-| Demo quality | [`docs/DEMO_SCRIPT.md`](DEMO_SCRIPT.md), timed with anticipated questions |
+| Code organisation | Package mirrors the course modules; 127 tests; CI |
+| Demo quality | [`docs/DEMO_SOLO.md`](DEMO_SOLO.md) — beat-by-beat script with commands, timings and anticipated questions |
 
 **Beyond the baseline:** every non-obvious decision is justified where it lives
 (module docstrings) *and* summarised in the README, with the reasoning — not
@@ -174,5 +175,5 @@ git log --oneline
 - [ ] `reports/` regenerated from a clean run
 - [ ] `git status` clean; no `kaggle.json`, `.env`, or dataset files committed
 - [ ] README architecture diagram renders on the hosting platform
-- [ ] Demo recorded (5–7 min) following `docs/DEMO_SCRIPT.md`
+- [ ] Demo recorded following `docs/DEMO_SOLO.md`
 - [ ] Repository link shared with the required access
